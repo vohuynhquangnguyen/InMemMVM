@@ -78,7 +78,7 @@ express or implied. See the LICENSE file for details.
 If you use this fork in academic work, you are required to:
 
 1. Cite the original NeuroSim papers.
-2. Acknowledge the DISys Lab and cite relevant papers which where appropriate.
+2. Cite relevant papers from the DISys Lab as applicable.
 
 ---
 
