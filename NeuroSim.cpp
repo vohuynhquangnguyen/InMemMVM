@@ -465,7 +465,7 @@ double NeuroSimSubArrayReadLatency(SubArray *subArray){	// For 1 weighted sum ta
 						  subArray->blSwitchMatrix.readLatency +
 						  subArray->readCircuit.readLatency +
 						  subArray->subtractor.readLatency +
-						  subArray->colDelay;
+						  subArray->colDelay +
 						  subArray->shiftAdd.readLatency;
 			  } else{		// Cross-point
 					subArray->wlSwitchMatrix.CalculateLatency(1e20, subArray->capRow1, subArray->resRow, subArray->numReadPulse, 1);	// Don't care write

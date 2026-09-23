@@ -412,7 +412,7 @@ void WriteWeights(){
 
 					}
 					numWriteOperation += numWriteOperationPerRow;
-                    sumNeuroSimWriteEnergy += NeuroSimSubArrayWriteEnergy(subArrayIH, numWriteOperationPerRow, numWriteCellPerOperation);
+                    // sumNeuroSimWriteEnergy += NeuroSimSubArrayWriteEnergy(subArrayIH, numWriteOperationPerRow, numWriteCellPerOperation); // Write enery accumulated twice, comment this line to avoid double counting
 				}
 				if(!std::isnan(sumArrayWriteEnergy)){
     				arrayIH->writeEnergy += sumArrayWriteEnergy;
