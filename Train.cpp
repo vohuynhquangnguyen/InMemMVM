@@ -477,6 +477,35 @@ void Train(const int numTrain, const int epochs, char *optimization_type) {
                 readVoltageMSB = static_cast<HybridCell*>(arrayIH->cell[0][0])->MSBcell_LTP.readVoltage;
 				readPulseWidthMSB = static_cast<HybridCell*>(arrayIH->cell[0][0])->MSBcell_LTP.readPulseWidth;     
             }
+            // --- MELISO+: adaptive ADC full scale -----------------------------------------------------
+            // NeuroSim digitizes every column against the current of all n cells at G_max, which turns the
+            // partial sums of row-normalized or sparse matrices into a few ADC codes. Here the full scale is
+            // the largest differential column current the programmed array can produce when every input bit
+            // is 1, max_j sum_k |G_jk - G_mid| V: a programmable-gain ADC calibrated once after write-and-
+            // verify (noiseless calibration read of the programmed conductances). rowSumMaxW is the same
+            // quantity in weight units (sum_k w_jk of that row), so digits / pSumMaxHardware * rowSumMaxW is
+            // the partial weighted sum in the algorithm domain. Falls back to NeuroSim's full scale for an
+            // all-zero array.
+            double IsumScale = 0;
+            double rowSumMaxW = 0;
+            if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(arrayIH->cell[0][0])) {
+                double IsumScaleFull = 0;
+                for (int j=0; j<param->nHide; j++) {
+                    double s = 0, sW = 0;
+                    for (int k=0; k<param->nInput; k++) {
+                        double Icell  = static_cast<AnalogNVM*>(arrayIH->cell[j][k])->conductance * readVoltage;
+                        double Imid   = arrayIH->GetMediumCellReadCurrent(j,k);
+                        double Irange = arrayIH->GetMaxCellReadCurrent(j,k) - arrayIH->GetMinCellReadCurrent(j,k);
+                        // absolute values: for signed weights (stage 2) the largest partial sum a bit-slice can
+                        // produce is the row's L1 norm, not its plain sum; for w >= 0 the two coincide
+                        s  += fabs(Icell - Imid);
+                        sW += fabs(Icell - Imid) / Irange * (param->maxWeight - param->minWeight);
+                        if (j == 0) IsumScaleFull += Irange / (param->maxWeight - param->minWeight);
+                    }
+                    if (s > IsumScale) { IsumScale = s; rowSumMaxW = sW; }
+                }
+                if (IsumScale <= 0) { IsumScale = IsumScaleFull; rowSumMaxW = arrayIH->arrayRowSize; }
+            }
             #pragma omp parallel for reduction(+: sumArrayReadEnergy)
 				for (int j=0; j<param->nHide; j++) {
 					if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(arrayIH->cell[0][0])) {  // Analog eNVM
@@ -498,8 +527,6 @@ void Train(const int numTrain, const int epochs, char *optimization_type) {
 						double pSumMaxAlgorithm = pow(2, n) / (param->numInputLevel - 1) * arrayIH->arrayRowSize;  // Max algorithm partial weighted sum for the nth vector bit (if both max input value and max weight are 1)
 						if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(arrayIH->cell[0][0])) {  // Analog eNVM
 							double Isum = 0;    // weighted sum current
-							double IsumMax = 0; // Max weighted sum current
-                            double IsumMin = 0;
 							double inputSum = 0;    // Weighted sum current of input vector * weight=1 column
 							for (int k=0; k<param->nInput; k++) {
 								if ((dInput[i][k]>>n) & 1) {    // if the nth bit of dInput[i][k] is 1
@@ -507,13 +534,15 @@ void Train(const int numTrain, const int epochs, char *optimization_type) {
                                     inputSum += arrayIH->GetMediumCellReadCurrent(j,k);    // get current of Dummy Column as reference
 									sumArrayReadEnergy += arrayIH->wireCapRow * readVoltage * readVoltage; // Selected BLs (1T1R) or Selected WLs (cross-point)
 								}
-								IsumMax += arrayIH->GetMaxCellReadCurrent(j,k);
-                                IsumMin += arrayIH->GetMinCellReadCurrent(j,k);
 							}
 							sumArrayReadEnergy += Isum * readVoltage * readPulseWidth;
-							int outputDigits = (CurrentToDigits(Isum, IsumMax-IsumMin)-CurrentToDigits(inputSum, IsumMax-IsumMin));
-                            //int outputDigits = (CurrentToDigits(Isum, IsumMax)-CurrentToDigits(inputSum, IsumMax));
-                            outN1[j] += DigitsToAlgorithm(outputDigits, pSumMaxAlgorithm);
+							// MELISO+: differential digitization of (I - I_ref) against the adaptive full scale, rounded to
+							// the nearest code (NeuroSim truncated I and I_ref separately against the all-cells-at-G_max scale).
+							int outputDigits = (int)floor((Isum - inputSum) / IsumScale * param->pSumMaxHardware + 0.5);
+							if (outputDigits >  param->pSumMaxHardware) outputDigits =  param->pSumMaxHardware;
+							if (outputDigits < -param->pSumMaxHardware) outputDigits = -param->pSumMaxHardware;
+							double pSumMaxAlgorithmAnalog = pow(2, n) / (param->numInputLevel - 1) * rowSumMaxW;  // partial weighted sum at full scale
+                            outN1[j] += DigitsToAlgorithm(outputDigits, pSumMaxAlgorithmAnalog);
 						}
                         else if(HybridCell*temp = dynamic_cast<HybridCell*>(arrayIH->cell[0][0]))
                         {
