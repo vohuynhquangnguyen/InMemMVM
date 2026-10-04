@@ -74,6 +74,7 @@ public:
 	int numInputLevel;	// # of levels of the input data
 	int numWeightBit;	// # of weight bits (only for pure algorithm, SRAM and digital RRAM hardware)
 	double BWthreshold; // The black and white threshold for numBitInput=1
+	int numVerifyReads;	// Reads averaged in each write-and-verify check (set by Meliso::setWeightsIncremental)
 	double Hthreshold;	// The spiking threshold for the hidden layer (da1 in Train.cpp and Test.cpp)
 	int numColMuxed;	// How many columns share 1 read circuit (for analog RRAM) or 1 S/A (for digital RRAM)
 	int numWriteColMuxed;	// How many columns share 1 write column decoder driver (for digital RRAM)

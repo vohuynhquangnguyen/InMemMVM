@@ -77,6 +77,7 @@ Param::Param() {
 	numInputLevel = pow(2, numBitInput);  // # of levels of the input data
 	numWeightBit = 6;	// # of weight bits (only for pure algorithm, SRAM and digital RRAM hardware)
 	BWthreshold = 0.5;	// The black and white threshold for numBitInput=1
+	numVerifyReads = 1;	// Reads averaged in each write-and-verify check
 	Hthreshold = 0.5;	// The spiking threshold for the hidden layer (da1 in Train.cpp and Test.cpp)
 	numColMuxed = 3;	// How many columns share 1 read circuit (for analog RRAM) or 1 S/A (for digital RRAM)
 	numWriteColMuxed = 3;	// How many columns share 1 write column decoder driver (for digital RRAM)

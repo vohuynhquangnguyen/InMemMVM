@@ -191,7 +191,8 @@ void WriteWeights(){
 
                             if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(arrayIH->cell[jj][k])) {	// Analog eNVM
                                 arrayIH->WriteCell(jj, k, deltaWeight1[jj][k], weight1[jj][k], param->maxWeight, param->minWeight, true);
-                                weight1[jj][k] = arrayIH->ConductanceToWeight(jj, k, param->maxWeight, param->minWeight);
+                                if (deltaWeight1[jj][k] != 0)	// a cell that passed verification keeps its verified weight (no re-read)
+                                    weight1[jj][k] = arrayIH->VerifiedWeight(jj, k, param->maxWeight, param->minWeight, param->numVerifyReads);
                                 //printf("jj:%d,k:%d,weight1:%e\n",jj,k,weight1[jj][k]);
                                 weightChangeBatch = weightChangeBatch || static_cast<AnalogNVM*>(arrayIH->cell[jj][k])->numPulse;
                                 if(fabs(static_cast<AnalogNVM*>(arrayIH->cell[jj][k])->numPulse) > maxPulseNum)
@@ -481,27 +482,45 @@ void Train(const int numTrain, const int epochs, char *optimization_type) {
             // NeuroSim digitizes every column against the current of all n cells at G_max, which turns the
             // partial sums of row-normalized or sparse matrices into a few ADC codes. Here the full scale is
             // the largest differential column current the programmed array can produce when every input bit
-            // is 1, max_j sum_k |G_jk - G_mid| V: a programmable-gain ADC calibrated once after write-and-
-            // verify (noiseless calibration read of the programmed conductances). rowSumMaxW is the same
+            // is 1, max_j sum_k |I_jk - I_mid|, with I_jk the cell's noiseless read current (through the access
+            // transistor and the wires, as in ReadCell and as the reference current I_mid): a programmable-gain
+            // ADC calibrated once after write-and-verify (noiseless calibration read). rowSumMaxW is the same
             // quantity in weight units (sum_k w_jk of that row), so digits / pSumMaxHardware * rowSumMaxW is
             // the partial weighted sum in the algorithm domain. Falls back to NeuroSim's full scale for an
-            // all-zero array.
+            // all-zero array. Each row also gets ADC_NOISE_HEADROOM standard deviations of the read noise of a
+            // full-drive read (every cell active), so that the noise of the largest rows is not clipped at the
+            // top code (a clipped row reads systematically low).
+            const double ADC_NOISE_HEADROOM = 4.0;
             double IsumScale = 0;
             double rowSumMaxW = 0;
             if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(arrayIH->cell[0][0])) {
                 double IsumScaleFull = 0;
                 for (int j=0; j<param->nHide; j++) {
-                    double s = 0, sW = 0;
+                    double s = 0, sW = 0, noiseVariance = 0, Irange = 0;
                     for (int k=0; k<param->nInput; k++) {
-                        double Icell  = static_cast<AnalogNVM*>(arrayIH->cell[j][k])->conductance * readVoltage;
+                        // noiseless read current: the same path as ReadCell and GetMedium/Max/MinCellReadCurrent
+                        // (G V alone leaves out the access transistor and overstated the full scale)
+                        eNVM *cellJK = static_cast<eNVM*>(arrayIH->cell[j][k]);
+                        bool readNoiseJK = cellJK->readNoise;
+                        cellJK->readNoise = false;
+                        double Icell  = arrayIH->ReadCell(j,k);
+                        cellJK->readNoise = readNoiseJK;
                         double Imid   = arrayIH->GetMediumCellReadCurrent(j,k);
-                        double Irange = arrayIH->GetMaxCellReadCurrent(j,k) - arrayIH->GetMinCellReadCurrent(j,k);
+                        Irange = arrayIH->GetMaxCellReadCurrent(j,k) - arrayIH->GetMinCellReadCurrent(j,k);
                         // absolute values: for signed weights (stage 2) the largest partial sum a bit-slice can
                         // produce is the row's L1 norm, not its plain sum; for w >= 0 the two coincide
                         s  += fabs(Icell - Imid);
                         sW += fabs(Icell - Imid) / Irange * (param->maxWeight - param->minWeight);
                         if (j == 0) IsumScaleFull += Irange / (param->maxWeight - param->minWeight);
+                        // read-noise variance of the cell current, (I a sigma)^2 with a = 1 / (1 + R G) = 1 - R I / V
+                        if (readNoiseJK) {
+                            double a = 1 - arrayIH->SeriesResistance(j,k) * Icell / cellJK->readVoltage;
+                            noiseVariance += pow(Icell * a * cellJK->sigmaReadNoise, 2);
+                        }
                     }
+                    double headroom = ADC_NOISE_HEADROOM * sqrt(noiseVariance);
+                    s  += headroom;
+                    sW += headroom / Irange * (param->maxWeight - param->minWeight);
                     if (s > IsumScale) { IsumScale = s; rowSumMaxW = sW; }
                 }
                 if (IsumScale <= 0) { IsumScale = IsumScaleFull; rowSumMaxW = arrayIH->arrayRowSize; }
@@ -531,7 +550,7 @@ void Train(const int numTrain, const int epochs, char *optimization_type) {
 							for (int k=0; k<param->nInput; k++) {
 								if ((dInput[i][k]>>n) & 1) {    // if the nth bit of dInput[i][k] is 1
 									Isum += arrayIH->ReadCell(j,k);
-                                    inputSum += arrayIH->GetMediumCellReadCurrent(j,k);    // get current of Dummy Column as reference
+                                    inputSum += arrayIH->ReferenceReadCurrent(j,k);    // Dummy Column reference, calibrated to the mean read of a weight-0 cell
 									sumArrayReadEnergy += arrayIH->wireCapRow * readVoltage * readVoltage; // Selected BLs (1T1R) or Selected WLs (cross-point)
 								}
 							}

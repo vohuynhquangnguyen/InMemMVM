@@ -36,24 +36,73 @@
 *   Xiaochen Peng   Email: xpeng15 at asu dot edu
 ********************************************************************************/
 
+#include <algorithm>
 #include "formula.h"
 #include "Array.h"
 
 int counter=0;
+
+// Resistance in series with analog cell (x, y) during a read: the wires, plus the access transistor of a 1T1R cell
+// (a FeFET is read without it).
+double Array::SeriesResistance(int x, int y) {
+	double wires = (x + 1) * wireResistanceRow + (arrayRowSize - y) * wireResistanceCol;
+	bool accessTransistorInSeries = static_cast<eNVM*>(cell[x][y])->cmosAccess && !static_cast<AnalogNVM*>(cell[x][y])->FeFET;
+	if (accessTransistorInSeries)
+		return wires + static_cast<eNVM*>(cell[x][y])->resistanceAccess;
+	return wires;
+}
+
+// Conductance whose noiseless read (ReadCell) converts to `weight` (ConductanceToWeight), clipped to the device
+// range. The read current is linear in the weight but not in the conductance (series resistance), so the linear
+// map G = (w - minWeight) / (maxWeight - minWeight) * (Gmax - Gmin) put a weight-0 cell at +0.042 on read-back.
+double Array::ConductanceForWeight(int x, int y, double weight, double maxWeight, double minWeight) {
+	AnalogNVM *device = static_cast<AnalogNVM*>(cell[x][y]);
+	double Imax = device->GetMaxReadCurrent();
+	double Imin = device->GetMinReadCurrent();
+	double current = Imin + (weight - minWeight) / (maxWeight - minWeight) * (Imax - Imin);
+	if (current <= 0)
+		return device->minConductance;
+	double deviceResistance = device->readVoltage / current - SeriesResistance(x, y);
+	if (deviceResistance <= 0)
+		return device->maxConductance;
+	return std::min(std::max(1 / deviceResistance, device->minConductance), device->maxConductance);
+}
+
+// Verify read of write-and-verify: the mean of numReads reads of analog cell (x, y), each with its own read noise,
+// converted to a weight as in ConductanceToWeight.
+double Array::VerifiedWeight(int x, int y, double maxWeight, double minWeight, int numReads) {
+	AnalogNVM *device = static_cast<AnalogNVM*>(cell[x][y]);
+	double currentSum = 0;
+	for (int read = 0; read < numReads; read++)
+		currentSum += ReadCell(x, y);
+	double Imax = device->GetMaxReadCurrent();
+	double Imin = device->GetMinReadCurrent();
+	double current = std::min(std::max(currentSum / numReads, Imin), Imax);
+	return (current - Imin) / (Imax - Imin) * (maxWeight - minWeight) + minWeight;
+}
+
+// Reference current of the differential readout for analog cell (x, y): the mean read current of a cell that holds
+// weight 0, as a reference column of such cells would give after a one-time calibration. With the read noise on the
+// resistance, I = V / ((1 + eps) / G0 + R) = I_mid / (1 + a eps), a = 1 / (1 + R G0), and
+// E[1 / (1 + a eps)] = 1 + s^2 + 3 s^4 + 15 s^6 + 105 s^8 with s = a sigma: about +0.2% at sigma = 0.05. The ideal
+// I_mid left that excess in every driven weight-0 cell, and the sum over a sparse row's blank cells dominated the error.
+double Array::ReferenceReadCurrent(int x, int y) {
+	double Imid = GetMediumCellReadCurrent(x, y);
+	eNVM *device = static_cast<eNVM*>(cell[x][y]);
+	if (!device->readNoise)
+		return Imid;
+	double seriesResistance = SeriesResistance(x, y);
+	double deviceResistance = device->readVoltage / Imid - seriesResistance;
+	double s2 = pow(deviceResistance / (deviceResistance + seriesResistance) * device->sigmaReadNoise, 2);
+	return Imid * (1 + s2 + 3 * pow(s2, 2) + 15 * pow(s2, 3) + 105 * pow(s2, 4));
+}
+
 double Array::ReadCell(int x, int y, char* mode) {
     // mode is only for the 3T1C cell to select LSB or MSB
     // it should be "MSB_LTP","MSB_LTD" or "LSB" 
 	if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(**cell)){ // Analog eNVM
 		double readVoltage = static_cast<eNVM*>(cell[x][y])->readVoltage;
-		double totalWireResistance;
-		if (static_cast<eNVM*>(cell[x][y])->cmosAccess){  // 1T1R cell or 1T1C cell
-			if (static_cast<AnalogNVM*>(cell[x][y])->FeFET) // FeFET
-				totalWireResistance = (x + 1) * wireResistanceRow + (arrayRowSize - y) * wireResistanceCol; // do not need to consider the access resistance
-            else // Normal
-				totalWireResistance = (x + 1) * wireResistanceRow + (arrayRowSize - y) * wireResistanceCol + static_cast<eNVM*>(cell[x][y])->resistanceAccess;
-		} 
-        else 
-			totalWireResistance = (x + 1) * wireResistanceRow + (arrayRowSize - y) * wireResistanceCol;
+		double totalWireResistance = SeriesResistance(x, y);
 		double cellCurrent;
 		if (static_cast<eNVM*>(cell[x][y])->nonlinearIV){
 			// Bisection method to calculate read current with nonlinearity
@@ -175,17 +224,8 @@ void Array::WriteCell(int x, int y, double deltaWeight, double weight, double ma
 	if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(**cell)){ // Analog eNVM
         if (regular)	// Regular write
 			static_cast<AnalogNVM*>(cell[x][y])->Write(deltaWeight, weight, minWeight, maxWeight);
-        else{	
-			double conductance = 0;
-			double maxConductance = static_cast<eNVM*>(cell[x][y])->maxConductance;
-			double minConductance = static_cast<eNVM*>(cell[x][y])->minConductance;
-			conductance = (weight-minWeight)/(maxWeight-minWeight) * (maxConductance - minConductance);
-			if (conductance > maxConductance) 
-				conductance = maxConductance; 
-            else if (conductance < minConductance) 
-				conductance = minConductance;
-			static_cast<eNVM*>(cell[x][y])->conductance = conductance;
-		}
+        else	// ideal write: the conductance that reads back as `weight`
+			static_cast<eNVM*>(cell[x][y])->conductance = ConductanceForWeight(x, y, weight, maxWeight, minWeight);
 	}
     else if(HybridCell*temp = dynamic_cast<HybridCell*>(**cell)){
         double weightLSB = this->ConductanceToWeight(x,y, maxWeight, minWeight, "LSB");
@@ -286,18 +326,8 @@ double Array::GetMediumCellReadCurrent(int x, int y) {
 
 // convert the conductance to -1~1 
 double Array::ConductanceToWeight(int x, int y, double maxWeight, double minWeight, char* mode) {
-	if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(**cell)){	// Analog eNVM
-		/* Measure current */
-		double I = this->ReadCell(x, y); // for AnalogNVM, read the current and convert it into conductance
-		/* Convert current to weight */
-		double Imax = static_cast<AnalogNVM*>(cell[x][y])->GetMaxReadCurrent(); // the current when Conductance is the minimum
-		double Imin = static_cast<AnalogNVM*>(cell[x][y])->GetMinReadCurrent(); // the current when Conductance is the maximum
-		if (I<Imin)
-			I = Imin;
-		else if (I>Imax)
-			I = Imax;
-		return (I-Imin) / (Imax-Imin) * (maxWeight-minWeight) + minWeight;
-	}
+	if (AnalogNVM *temp = dynamic_cast<AnalogNVM*>(**cell))	// Analog eNVM: one read, converted to a weight
+		return VerifiedWeight(x, y, maxWeight, minWeight, 1);
     else if (HybridCell *temp = dynamic_cast<HybridCell*>(**cell)){
 		double I = this->ReadCell(x, y,"LSB"); // for 3T1C cell, read the current and convert it into conductance
 		double Imax = static_cast<HybridCell*>(cell[x][y])->LSBcell.GetMaxReadCurrent(); // the current when Conductance is the minimum
