@@ -53,10 +53,10 @@ void ReadCircuit::Initialize(ReadCircuitMode _mode, int _numReadCol, int _maxNum
 		cout << "[ReadCircuit] Warning: Already initialized!" << endl;
 	
 	mode = _mode;
-	maxNumIntPerCycle = (int)pow(2, maxNumIntBit);
 	voltageIntThreshold = cell.readVoltage * RATIO_READ_THRESHOLD_VS_VOLTAGE;
 	numReadCol = _numReadCol;
 	maxNumIntBit = _maxNumIntBit;
+	maxNumIntPerCycle = (int)pow(2, maxNumIntBit);	// uses maxNumIntBit: keep it after the assignment above
 	spikingMode = _spikingMode;
 	clkFreq = _clkFreq;
 
